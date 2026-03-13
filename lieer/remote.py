@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import itertools
 import json
 import os
 import time
@@ -327,6 +328,16 @@ class Remote:
 
     @__require_auth__
     def get_messages(self, gids, cb, format):
+        # batch the requests with a sleep to stay within Gmail API quota limits.
+        batch_size = 5
+
+        for batched_gids in itertools.batched(gids, batch_size, strict=False):
+            self.get_messages_internal(batched_gids, cb, format)
+            time.sleep(1)
+
+
+    @__require_auth__
+    def get_messages_internal(self, gids, cb, format):
         """
         Get the messages
         """
