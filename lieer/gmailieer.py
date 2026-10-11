@@ -518,94 +518,109 @@ class Gmailieer:
         # loading local changes
 
         with notmuch2.Database() as db:
-            rev = db.revision().rev
-            if rev == self.local.state.lastmod:
-                self.vprint("push: everything is up-to-date.")
-                return
+            def _push(lastmod, rev):
+                qry = "path:%s/** and lastmod:%d..%d" % (
+                    self.local.nm_relative,
+                    lastmod,
+                    rev,
+                )
 
-            qry = "path:%s/** and lastmod:%d..%d" % (
-                self.local.nm_relative,
-                self.local.state.lastmod,
-                rev,
-            )
+                messages = [db.get(m.path) for m in db.messages(qry, sort=notmuch2.Database.SORT.OLDEST_FIRST)]
 
-            messages = [db.get(m.path) for m in db.messages(qry)]
+                if self.limit is not None and len(messages) > self.limit:
+                    messages = messages[: self.limit]
 
-            if self.limit is not None and len(messages) > self.limit:
-                messages = messages[: self.limit]
+                # get gids and filter out messages outside this repository
+                messages, gids = self.local.messages_to_gids(messages)
 
-            # get gids and filter out messages outside this repository
-            messages, gids = self.local.messages_to_gids(messages)
+                # get meta-data on changed messages from remote
+                remote_messages = []
+                self.bar_create(leave=True, total=len(gids), desc="receiving metadata")
 
-            # get meta-data on changed messages from remote
-            remote_messages = []
-            self.bar_create(leave=True, total=len(gids), desc="receiving metadata")
+                def _got_msgs(ms):
+                    for m in ms:
+                        self.bar_update(1)
+                        remote_messages.append(m)
 
-            def _got_msgs(ms):
-                for m in ms:
-                    self.bar_update(1)
-                    remote_messages.append(m)
+                self.remote.get_messages(gids, _got_msgs, "minimal")
+                self.bar_close()
 
-            self.remote.get_messages(gids, _got_msgs, "minimal")
-            self.bar_close()
-
-            # resolve changes
-            self.bar_create(leave=True, total=len(gids), desc="resolving changes")
-            actions = []
-            for rm, nm in zip(remote_messages, messages):
-                actions.append(
-                    self.remote.update(
-                        rm, nm, self.local.state.last_historyId, self.force
+                # resolve changes
+                self.bar_create(leave=True, total=len(gids), desc="resolving changes")
+                actions = []
+                for rm, nm in zip(remote_messages, messages):
+                    actions.append(
+                        self.remote.update(
+                            rm, nm, self.local.state.last_historyId, self.force
+                        )
                     )
-                )
-                self.bar_update(1)
-
-            self.bar_close()
-
-            # remove no-ops
-            actions = [a for a in actions if a]
-
-            # limit
-            if self.limit is not None and len(actions) >= self.limit:
-                actions = actions[: self.limit]
-
-            # push changes
-            if len(actions) > 0:
-                self.bar_create(
-                    leave=True, total=len(actions), desc="pushing, 0 changed"
-                )
-                changed = 0
-
-                def cb(_):
-                    nonlocal changed
                     self.bar_update(1)
-                    changed += 1
-                    if not self.args.quiet and self.bar:
-                        self.bar.set_description("pushing, %d changed" % changed)
-
-                self.remote.push_changes(actions, cb)
 
                 self.bar_close()
+
+                # remove no-ops
+                actions = [a for a in actions if a]
+
+                # limit
+                if self.limit is not None and len(actions) >= self.limit:
+                    actions = actions[: self.limit]
+
+                # push changes
+                if len(actions) > 0:
+                    self.bar_create(
+                        leave=True, total=len(actions), desc="pushing, 0 changed"
+                    )
+                    changed = 0
+
+                    def cb(_):
+                        nonlocal changed
+                        self.bar_update(1)
+                        changed += 1
+                        if not self.args.quiet and self.bar:
+                            self.bar.set_description("pushing, %d changed" % changed)
+
+                    self.remote.push_changes(actions, cb)
+
+                    self.bar_close()
+                else:
+                    self.vprint("push: nothing to push")
+
+                all_updated = True
+                if not self.remote.all_updated:
+                    all_updated = False
+                    # will not set last_mod, this forces messages to be pushed again at next push
+                    print(f"push: not all changes between {lastmod}-{rev} could be pushed, will re-try at next push.")
+                else:
+                    # TODO: Once we get more confident we might set the last history Id here to
+                    # avoid pulling back in the changes we just pushed. Currently there's a race
+                    # if something is modified remotely (new email, changed tags), so this might
+                    # not really be possible.
+                    pass
+
+                if not self.dry_run and self.remote.all_updated:
+                    self.local.state.set_lastmod(rev)
+
+                return all_updated
+
+            # Overall logic
+            rev = db.revision().rev
+            lastmod = self.local.state.lastmod
+            if rev == lastmod:
+                self.vprint("push: everything is up-to-date.")
+                return
+            if rev-lastmod > 10000:
+                delta = 2000
+                for lastmod in range(lastmod, rev, delta):
+                    updated = _push(lastmod, lastmod+delta)
+                    if not updated:
+                        break
             else:
-                self.vprint("push: nothing to push")
+                _push(lastmod, rev)
 
-        if not self.remote.all_updated:
-            # will not set last_mod, this forces messages to be pushed again at next push
-            print("push: not all changes could be pushed, will re-try at next push.")
-        else:
-            # TODO: Once we get more confident we might set the last history Id here to
-            # avoid pulling back in the changes we just pushed. Currently there's a race
-            # if something is modified remotely (new email, changed tags), so this might
-            # not really be possible.
-            pass
-
-        if not self.dry_run and self.remote.all_updated:
-            self.local.state.set_lastmod(rev)
-
-        self.vprint(
-            "remote historyId: %d"
-            % self.remote.get_current_history_id(self.local.state.last_historyId)
-        )
+            self.vprint(
+                "remote historyId: %d"
+                % self.remote.get_current_history_id(self.local.state.last_historyId)
+            )
 
     def pull(self, args, setup=False):
         if not setup:
