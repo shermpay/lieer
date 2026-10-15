@@ -386,7 +386,7 @@ class Remote:
 
                 elif (
                     type(excep) is googleapiclient.errors.HttpError
-                    and excep.resp.status == 403
+                    and excep.resp.status in (403, 429)
                 ):
                     raise Remote.UserRateException(excep)
 
@@ -488,7 +488,7 @@ class Remote:
             )
 
         except googleapiclient.errors.HttpError as excep:
-            if excep.resp.status == 403 or excep.resp.status == 500:
+            if excep.resp.status in (403, 429, 500):
                 self.__request_done__(False)
                 return self.get_message(gid, format)
             else:
@@ -782,7 +782,7 @@ class Remote:
 
                 elif (
                     type(excep) is googleapiclient.errors.HttpError
-                    and excep.resp.status == 403
+                    and excep.resp.status in (403, 429)
                 ):
                     raise Remote.UserRateException(excep)
 
@@ -867,7 +867,7 @@ class Remote:
                 return (lr["id"], l)
 
             except googleapiclient.errors.HttpError as excep:
-                if excep.resp.status == 403 or excep.resp.status == 500:
+                if excep.resp.status in (403, 429, 500):
                     self.__request_done__(False)
                     return self.__create_label__(l)
                 else:
